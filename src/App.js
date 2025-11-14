@@ -12,8 +12,9 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [selectedColumn, setSelectedColumn] = useState(3);
   const [startRow, setStartRow] = useState(1);
-  const [endRow, setEndRow] = useState(null); // YANGI: Tugash qatori
+  const [endRow, setEndRow] = useState(null);
   const [generatedBarcodes, setGeneratedBarcodes] = useState([]);
+  const [progress, setProgress] = useState({ current: 0, total: 0, message: '' });
 
   // Excel faylni yuklash
   const handleFileUpload = (e) => {
@@ -31,7 +32,7 @@ function App() {
       const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
       
       setData(jsonData);
-      setEndRow(jsonData.length - 1); // Default: oxirgi qatorgacha
+      setEndRow(jsonData.length - 1);
       setGeneratedBarcodes([]);
     };
 
@@ -73,11 +74,10 @@ function App() {
     }
   };
 
-  // Excel yaratish va yuklab olish
+  // Excel yaratish va yuklab olish - PROGRESS BILAN
   const processAndDownload = async () => {
     if (data.length === 0) return;
     
-    // Qator oralig'ini tekshirish
     const actualEndRow = endRow || data.length - 1;
     
     if (startRow < 1 || startRow > data.length - 1) {
@@ -91,33 +91,110 @@ function App() {
     }
 
     setLoading(true);
+    setProgress({ current: 0, total: 0, message: '📋 Tayyorlanmoqda...' });
 
     try {
       const workbook = new ExcelJS.Workbook();
       const worksheet = workbook.addWorksheet('Sheet1');
       const barcodes = [];
 
-      // Sarlavhani qo'shish
+      // Jami ishlar sonini hisoblash
+      const dataMatrixCount = data.slice(startRow, actualEndRow + 1).filter(row => 
+        row[selectedColumn] && row[selectedColumn].toString().trim()
+      ).length;
+      
+      setProgress({ 
+        current: 0, 
+        total: dataMatrixCount, 
+        message: `🔧 Excel sozlanmoqda...\n${dataMatrixCount} ta Data Matrix yaratiladi` 
+      });
+
+      await new Promise(resolve => setTimeout(resolve, 500)); // UI yangilanishi uchun
+
+      // 🖨️ PRINT SOZLAMALARI
+      worksheet.pageSetup = {
+        paperSize: 9,
+        orientation: 'portrait',
+        fitToPage: true,
+        fitToWidth: 1,
+        fitToHeight: 0,
+        margins: {
+          left: 0.25,
+          right: 0.25,
+          top: 0.75,
+          bottom: 0.75,
+          header: 0.3,
+          footer: 0.3
+        },
+        printArea: `A1:${String.fromCharCode(65 + data[0].length - 1)}${data.length}`,
+        printTitlesRow: '1:1',
+        horizontalCentered: true
+      };
+
+      worksheet.headerFooter.oddHeader = `&C&B&14${fileName || 'Data Matrix Export'}`;
+      worksheet.headerFooter.oddFooter = `&L&D &T&R&P / &N`;
+
+      setProgress({ 
+        current: 0, 
+        total: dataMatrixCount, 
+        message: '📊 Sarlavha yaratilmoqda...' 
+      });
+
+      // 📋 SARLAVHA QATORI
       worksheet.addRow(data[0]);
-      worksheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      worksheet.getRow(1).font = { 
+        bold: true, 
+        color: { argb: 'FFFFFFFF' }, 
+        size: 12,
+        name: 'Arial'
+      };
       worksheet.getRow(1).fill = {
         type: 'pattern',
         pattern: 'solid',
         fgColor: { argb: 'FF667EEA' }
       };
-      worksheet.getRow(1).height = 25;
+      worksheet.getRow(1).height = 35;
+      worksheet.getRow(1).alignment = { 
+        vertical: 'middle', 
+        horizontal: 'center',
+        wrapText: true
+      };
+      
+      // Sarlavha border
+      data[0].forEach((_, colIndex) => {
+        const cell = worksheet.getCell(1, colIndex + 1);
+        cell.border = {
+          top: { style: 'medium', color: { argb: 'FF667EEA' } },
+          left: { style: 'medium', color: { argb: 'FF667EEA' } },
+          bottom: { style: 'medium', color: { argb: 'FF667EEA' } },
+          right: { style: 'medium', color: { argb: 'FF667EEA' } }
+        };
+      });
 
-      // Har bir qator uchun
+      let processedCount = 0;
+
+      // 📊 HAR BIR QATOR UCHUN
       for (let i = 1; i < data.length; i++) {
         const row = [...data[i]];
         const columnValue = row[selectedColumn];
-
         const originalValue = row[selectedColumn];
+        
         row[selectedColumn] = '';
         worksheet.addRow(row);
 
-        // YANGI: Tanlangan oraliqda faqat Data Matrix yaratish
+        // Data Matrix yaratish
         if (i >= startRow && i <= actualEndRow && columnValue && columnValue.toString().trim()) {
+          processedCount++;
+          
+          const percentage = Math.round((processedCount / dataMatrixCount) * 100);
+          const shortData = columnValue.toString().substring(0, 30);
+          
+          setProgress({ 
+            current: processedCount, 
+            total: dataMatrixCount, 
+            message: `🔨 Data Matrix yaratilmoqda...\n\n📊 ${processedCount} / ${dataMatrixCount} (${percentage}%)\n\n📍 Qator ${i}: ${shortData}${columnValue.toString().length > 30 ? '...' : ''}` 
+          });
+
           const base64Image = await generateDataMatrix(columnValue);
 
           if (base64Image) {
@@ -133,33 +210,103 @@ function App() {
             });
 
             worksheet.addImage(imageId, {
-              tl: { col: selectedColumn, row: i },
-              ext: { width: 220, height: 220 }
+              tl: { col: selectedColumn, row: i, colOff: '0.05in', rowOff: '0.05in' },
+              ext: { width: 200, height: 200 }
             });
 
-            worksheet.getRow(i + 1).height = 165;
+            const infoCell = worksheet.getCell(i + 1, selectedColumn + 1);
+            const displayData = originalValue.toString().length > 100 
+              ? originalValue.toString().substring(0, 100) + '...'
+              : originalValue.toString();
+            
+            infoCell.value = {
+              richText: [
+                { 
+                  font: { size: 9, color: { argb: 'FF666666' }, name: 'Arial' }, 
+                  text: `${displayData}` 
+                }
+              ]
+            };
+            infoCell.alignment = { 
+              vertical: 'bottom', 
+              horizontal: 'center', 
+              wrapText: true 
+            };
+
+            worksheet.getRow(i + 1).height = 150;
           }
         } else {
           worksheet.getCell(i + 1, selectedColumn + 1).value = originalValue;
+          worksheet.getRow(i + 1).height = 22;
         }
 
-        const columnLetter = String.fromCharCode(65 + selectedColumn);
-        const cell = worksheet.getCell(`${columnLetter}${i + 1}`);
-        
-        cell.fill = {
-          type: 'pattern',
-          pattern: 'solid',
-          fgColor: { argb: 'FFFFFFFF' }
-        };
+        // 🎨 HUJAYRALARGA BORDER VA RANG
+        row.forEach((_, colIndex) => {
+          const cell = worksheet.getCell(i + 1, colIndex + 1);
+          
+          cell.border = {
+            top: { style: 'thin', color: { argb: 'FFD0D0D0' } },
+            left: { style: 'thin', color: { argb: 'FFD0D0D0' } },
+            bottom: { style: 'thin', color: { argb: 'FFD0D0D0' } },
+            right: { style: 'thin', color: { argb: 'FFD0D0D0' } }
+          };
+          
+          cell.font = { name: 'Arial', size: 10 };
+          
+          if (colIndex === selectedColumn && i >= startRow && i <= actualEndRow && columnValue && columnValue.toString().trim()) {
+            cell.fill = {
+              type: 'pattern',
+              pattern: 'solid',
+              fgColor: { argb: 'FFFFFFFF' }
+            };
+          } else {
+            cell.alignment = { 
+              vertical: 'middle', 
+              horizontal: colIndex === 0 ? 'center' : 'left',
+              wrapText: false
+            };
+            
+            if (i % 2 === 0) {
+              cell.fill = {
+                type: 'pattern',
+                pattern: 'solid',
+                fgColor: { argb: 'FFF9FAFB' }
+              };
+            }
+          }
+        });
       }
 
+      setProgress({ 
+        current: dataMatrixCount, 
+        total: dataMatrixCount, 
+        message: '🎨 Formatlash tugallanmoqda...' 
+      });
+
+      // 📏 USTUN KENGLIKLARI
       worksheet.columns = data[0].map((_, index) => {
         if (index === selectedColumn) return { width: 32 };
         if (index === 0) return { width: 10 };
-        if (index === 1) return { width: 35 };
-        return { width: 15 };
+        if (index === 1) return { width: 38 };
+        return { width: 16 };
       });
 
+      worksheet.views = [
+        {
+          state: 'frozen',
+          ySplit: 1,
+          activeCell: 'A2',
+          showGridLines: true
+        }
+      ];
+
+      setProgress({ 
+        current: dataMatrixCount, 
+        total: dataMatrixCount, 
+        message: '💾 Excel fayl saqlanmoqda...' 
+      });
+
+      // ✅ FAYLNI SAQLASH
       const buffer = await workbook.xlsx.writeBuffer();
       const blob = new Blob([buffer], { 
         type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' 
@@ -175,12 +322,14 @@ function App() {
       window.URL.revokeObjectURL(url);
 
       setGeneratedBarcodes(barcodes);
+      setProgress({ current: 0, total: 0, message: '' });
 
       const columnLetter = String.fromCharCode(65 + selectedColumn);
-      alert(`✅ Excel fayl tayyor!\n\n${columnLetter} ustundagi ${barcodes.length} ta ma'lumot Data Matrix kodlari bilan almashtirildi.\n\n📌 Qator oralig'i: ${startRow} dan ${actualEndRow} gacha\n\n✨ Xususiyatlar:\n• Oq fon (100% oq)\n• Chetlarda 80px bo'sh joy\n• 220x220 piksel o'lcham\n• Maksimal tiniqlik`);
+      alert(`✅ Excel fayl tayyor!\n\n${columnLetter} ustundagi ${barcodes.length} ta ma'lumot Data Matrix kodlari bilan almashtirildi.\n\n📌 Qator oralig'i: ${startRow} dan ${actualEndRow} gacha\n\n✨ Xususiyatlar:\n• Print uchun optimallashtirilgan\n• Har bir Data Matrix ostida ma'lumot\n• Oq fon (100% oq)\n• Chetlarda 80px bo'sh joy\n• 200x200 piksel o'lcham\n• Professional formatlash\n• Zebra stripes\n\n🖨️ Print qilish uchun tayyor!`);
     } catch (error) {
       console.error('Xatolik:', error);
       alert('❌ Xatolik yuz berdi: ' + error.message);
+      setProgress({ current: 0, total: 0, message: '' });
     }
 
     setLoading(false);
@@ -203,6 +352,7 @@ function App() {
     }
 
     setLoading(true);
+    setProgress({ current: 0, total: generatedBarcodes.length, message: '📦 ZIP fayl yaratilmoqda...' });
 
     try {
       const zip = new JSZip();
@@ -214,14 +364,23 @@ function App() {
         const safeData = barcode.data.substring(0, 30).replace(/[^a-zA-Z0-9]/g, '_');
         const fileName = `row${barcode.rowNumber}_${safeData}.png`;
         imagesFolder.file(fileName, base64Data, { base64: true });
+        
+        setProgress({ 
+          current: i + 1, 
+          total: generatedBarcodes.length, 
+          message: `📦 ZIP yaratilmoqda...\n\n📊 ${i + 1} / ${generatedBarcodes.length}\n\n📁 ${fileName}` 
+        });
+        
+        await new Promise(resolve => setTimeout(resolve, 10));
       }
 
+      const columnLetter = String.fromCharCode(65 + selectedColumn);
       const readmeContent = `Data Matrix Rasmlar (Tiniq va Oq Fonli)
 ==========================================
 
 Jami rasmlar: ${generatedBarcodes.length}
 Asl Excel fayl: ${fileName}
-Tanlangan ustun: ${String.fromCharCode(65 + selectedColumn)}
+Tanlangan ustun: ${columnLetter}
 Qator oralig'i: ${startRow} dan ${endRow || data.length - 1} gacha
 Yaratilgan sana: ${new Date().toLocaleString('uz-UZ')}
 
@@ -229,13 +388,31 @@ Yaratilgan sana: ${new Date().toLocaleString('uz-UZ')}
    • 100% Oq fonli (#FFFFFF)
    • Chetlarida 80px bo'sh joy
    • Scale: 12 (maksimal tiniqlik)
-   • 220x220 piksel o'lcham
+   • 200x200 piksel o'lcham
    • PNG formatda (maksimal sifat)
    • O'qish uchun optimal
+
+📋 Har bir rasm nomi formatda:
+   row[QATOR_RAQAMI]_[MA'LUMOT].png
+   
+   Masalan: row5_ABC123456.png
+   Bu 5-qatordagi ma'lumotni bildiradi.
+
+🖨️ Print uchun:
+   Excel faylda har bir Data Matrix ostida quyidagi ma'lumot:
+   - Qator raqami
+   - Ustun harfi
+   - Asl ma'lumot
 
 Ushbu rasmlar Data Matrix skanerlar bilan osongina o'qiladi.`;
       
       zip.file('README.txt', readmeContent);
+      
+      setProgress({ 
+        current: generatedBarcodes.length, 
+        total: generatedBarcodes.length, 
+        message: '🗜️ ZIP siqilmoqda...' 
+      });
 
       const zipBlob = await zip.generateAsync({ 
         type: 'blob',
@@ -246,11 +423,13 @@ Ushbu rasmlar Data Matrix skanerlar bilan osongina o'qiladi.`;
       const zipFileName = fileName.replace(/\.[^/.]+$/, '') + '_datamatrix_images.zip';
       saveAs(zipBlob, zipFileName);
 
+      setProgress({ current: 0, total: 0, message: '' });
       setLoading(false);
-      alert(`✅ ${generatedBarcodes.length} ta rasm ZIP faylda muvaffaqiyatli yuklandi!`);
+      alert(`✅ ${generatedBarcodes.length} ta rasm ZIP faylda muvaffaqiyatli yuklandi!\n\n📦 Fayl: ${zipFileName}`);
     } catch (error) {
       console.error('ZIP yaratishda xatolik:', error);
       alert('❌ ZIP yaratishda xatolik: ' + error.message);
+      setProgress({ current: 0, total: 0, message: '' });
       setLoading(false);
     }
   };
@@ -290,11 +469,19 @@ Ushbu rasmlar Data Matrix skanerlar bilan osongina o'qiladi.`;
             </div>
             <div className="feature-item">
               <span className="feature-icon">📏</span>
-              <span>220x220 piksel</span>
+              <span>200x200 piksel</span>
             </div>
             <div className="feature-item">
               <span className="feature-icon">🎯</span>
               <span>Qator oralig'i</span>
+            </div>
+            <div className="feature-item">
+              <span className="feature-icon">🖨️</span>
+              <span>Print uchun tayyor</span>
+            </div>
+            <div className="feature-item">
+              <span className="feature-icon">🏷️</span>
+              <span>Qator ma'lumoti</span>
             </div>
           </div>
         </div>
@@ -312,6 +499,42 @@ Ushbu rasmlar Data Matrix skanerlar bilan osongina o'qiladi.`;
             style={{ display: 'none' }}
           />
         </div>
+
+        {/* 🔥 PROGRESS INDICATOR */}
+        {loading && progress.total > 0 && (
+          <div className="progress-overlay">
+            <div className="progress-modal">
+              <div className="progress-header">
+                <h3>⏳ Jarayon davom etmoqda...</h3>
+              </div>
+              
+              <div className="progress-info">
+                <div className="progress-message">{progress.message}</div>
+              </div>
+              
+              <div className="progress-bar-container">
+                <div 
+                  className="progress-bar-fill" 
+                  style={{ width: `${(progress.current / progress.total) * 100}%` }}
+                >
+                  <span className="progress-bar-text">
+                    {Math.round((progress.current / progress.total) * 100)}%
+                  </span>
+                </div>
+              </div>
+              
+              <div className="progress-stats">
+                <span className="progress-stat">✅ Tugallandi: {progress.current}</span>
+                <span className="progress-stat">📊 Jami: {progress.total}</span>
+                <span className="progress-stat">⏱️ Qoldi: {progress.total - progress.current}</span>
+              </div>
+              
+              <div className="progress-note">
+                ⚠️ Iltimos, oynani yopmang va kutib turing...
+              </div>
+            </div>
+          </div>
+        )}
 
         {data.length > 0 && (
           <div className="result-section">
@@ -467,14 +690,14 @@ Ushbu rasmlar Data Matrix skanerlar bilan osongina o'qiladi.`;
               <div className="barcodes-gallery">
                 <h3><span className="section-icon">🖼️</span> Yaratilgan Data Matrix Kodlar</h3>
                 <p className="gallery-subtitle">
-                  Professional sifatda yaratilgan - oq fonli, maksimal tiniqlik!
+                  Professional sifatda yaratilgan - oq fonli, maksimal tiniqlik! Print uchun tayyor!
                 </p>
                 
                 <div className="gallery-grid">
                   {generatedBarcodes.map((barcode, index) => (
                     <div key={index} className="gallery-item">
                       <div className="gallery-header">
-                        <span className="gallery-row">Qator {barcode.rowNumber}</span>
+                        <span className="gallery-row">Qator {barcode.rowNumber} | {getColumnLetter(selectedColumn)}</span>
                         <button
                           onClick={() => downloadSingleImage(barcode)}
                           className="download-single-btn"
